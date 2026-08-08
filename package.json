@@ -38,10 +38,10 @@
     "build-dev-css": "postcss src/app/src/index.css -o src/app/src/application.css --config src/app/postcss.config.cjs",
     "build-prod": "concurrently --kill-others-on-fail --names \"build-dev-css,build-prod-server,vite:build\" \"npm run build-dev-css\" \"npm run build-prod-server\" \"npm run vite:build\" && npm run copy-css",
     "build-prod-server": "node esbuild.config.js --production --target=all",
-    "copy-css": "cross-env mkdir -p dist/gsender/app/src && cp src/app/src/application.css dist/gsender/app/src/",
+    "copy-css": "node scripts/copy-build-assets.js css",
     "postbuild-dev-server": "echo 'Static files copied by esbuild'",
     "postbuild-prod-server": "echo 'Static files copied by esbuild'",
-    "clean": "bash -c 'rm -rf ./dist ./output'",
+    "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist', { recursive: true, force: true }); fs.rmSync('output', { recursive: true, force: true });\"",
     "tailwind-dev": "npx tailwindcss -i src/app/src/index.css -o src/app/src/application.css --config src/app/tailwind.config.ts --watch",
     "electron": "electron",
     "electron-builder": "electron-builder",
@@ -68,7 +68,8 @@
     "dev": "npm run prebuild-dev && npm run build-dev-server && concurrently --kill-others-on-fail --names \"esbuild,server,tailwind\" \"npm run watch-dev\" \"npm run start-dev:nodemon\" \"npm run tailwind-dev\"",
     "vite:dev": "cd src/app && vite --port 5173 --host",
     "electron:dev": "npm run electron:hot",
-    "electron:hot": "npm run build-dev && concurrently --kill-others-on-fail --names \"esbuild,server,vite,electron\" \"npm run watch-dev\" \"npm run start-dev:nodemon\" \"npm run vite:dev\" \"bash -lc 'until curl -sf http://127.0.0.1:5173 >/dev/null; do sleep 0.2; done; cross-env NODE_ENV=development ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron ./output/main'\"",
+    "start-electron:hot": "node scripts/start-electron-hot.js",
+    "electron:hot": "npm run build-dev && concurrently --kill-others-on-fail --names \"esbuild,server,vite,electron\" \"npm run watch-dev\" \"npm run start-dev:nodemon\" \"npm run vite:dev\" \"npm run start-electron:hot\"",
     "prod": "npm run build-prod && NODE_ENV=production ./bin/gsender",
     "lint": "concurrently --kill-others-on-fail --names \"eslint,stylint\"\"yarn run eslint\" \"yarn run stylint\"",
     "eslint": "npm run eslint:build",
@@ -79,7 +80,7 @@
     "coveralls": "tap test/*.js --coverage --coverage-report=text-lcov --nyc-arg=--require --nyc-arg=esbuild-register | coveralls",
     "cypress:open": "cypress open",
     "vite:build": "cross-env NODE_OPTIONS='--max-old-space-size=8192' yarn --cwd ./src/app build",
-    "postvite:build": "bash -c \"mkdir -p dist/gsender/app; cp -af src/app/{favicon.ico,images,assets} dist/gsender/app/\"",
+    "postvite:build": "node scripts/copy-build-assets.js vite",
     "install:packages": "yarn install && yarn install --prefix /src/app",
     "check-types": "tsc --noEmit -p ./src/app/src",
     "test:unit": "jest",
@@ -163,6 +164,7 @@
       "target": [
         "nsis"
       ],
+      "signAndEditExecutable": false,
       "icon": "electron-build/icon.ico"
     },
     "linux": {
@@ -423,7 +425,7 @@
     "universal-logger-browser": "~1.0.2",
     "use-long-press": "^3.2.0",
     "vaul": "^1.1.2",
-    "vite": "^7.3.1",
+    "vite": "^5.4.2",
     "vite-css-modules": "^1.11.1",
     "vite-plugin-node-polyfills": "0.23.0",
     "vite-tsconfig-paths": "5.0.1",

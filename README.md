@@ -108,6 +108,32 @@ You can both run gSender locally using the public code-base as well as compile i
 
 **Note:** This guide is intended for users with some familiarity with command-line interfaces and software development environments. If you are looking to simply install gSender, please refer to the [gSender Installation Guide](https://resources.sienci.com/view/gs-installation/).
 
+### Running Locally
+
+gSender requires Node.js 18 or newer. The Electron desktop app uses built files from `dist/gsender`.
+
+For a fresh checkout, install the root and frontend dependencies, then build the application:
+
+```powershell
+npm.cmd install --legacy-peer-deps
+yarn.cmd --cwd src/app install
+npm.cmd run build-prod
+```
+
+Start the desktop application:
+
+```powershell
+npm.cmd run start-electron
+```
+
+For Electron development with rebuilds and hot reload, use:
+
+```powershell
+npm.cmd run electron:hot
+```
+
+The hot-reload command starts Vite on port 5173 and the backend server on port 8000. `npm.cmd start` runs the server-only entry point rather than the Electron desktop application.
+
 ## 🕣 Development History
 <details>
 <summary>Expand to see all version notes</summary>

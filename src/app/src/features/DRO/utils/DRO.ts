@@ -65,18 +65,21 @@ export function zeroAllAxes() {
     }
 }
 
-export function goXYAxes() {
+function goAxesToZero(axes: string[]) {
     const commands: string[] = [];
     const settings = get(controller.settings, 'settings', {});
     const homingSetting = Number(get(settings, '$22', 0));
     const homingEnabled = homingSetting !== 0;
-
     const retractHeight = Number(store.get('workspace.safeRetractHeight', -1));
+    const includesPlanarAxis = axes.includes('X') || axes.includes('Y');
+    const nonZAxes = axes.filter((axis) => axis !== 'Z');
+    const includesZ = axes.includes('Z');
 
-    if (retractHeight !== 0) {
+    if (retractHeight !== 0 && includesPlanarAxis) {
         if (homingEnabled) {
             const currentZ = Number(get(controller, 'state.status.mpos.z', 0));
             const retract = Math.abs(retractHeight) * -1;
+
             // only move Z if it is less than Z0-SafeHeight
             if (currentZ < retract) {
                 commands.push(`G53 G0 Z${retract}`);
@@ -87,46 +90,32 @@ export function goXYAxes() {
         }
     }
 
-    commands.push(`G90 G0 X0 Y0`);
-
-    if (retractHeight !== 0 && !homingEnabled) {
-        commands.push(`G91 G0 Z${retractHeight * -1}`);
-        commands.push('G90');
+    if (nonZAxes.length > 0) {
+        commands.push(`G90 G0 ${nonZAxes.map((axis) => `${axis}0`).join(' ')}`);
     }
 
-    controller.command('gcode:safe', commands, 'G21'); // we want to run these commands in metric so set prefUnits to G21
-}
-
-export function gotoZero(axis: string) {
-    const commands: string[] = [];
-    const settings = get(controller.settings, 'settings', {});
-    const homingSetting = Number(get(settings, '$22', 0));
-    const homingEnabled = homingSetting !== 0;
-
-    const retractHeight = Number(store.get('workspace.safeRetractHeight', -1));
-
-    if (retractHeight !== 0 && axis !== 'Z') {
-        if (homingEnabled) {
-            const currentZ = Number(get(controller, 'state.status.mpos.z', 0));
-            const retract = Math.abs(retractHeight) * -1;
-            // only move Z if it is less than Z0-SafeHeight
-            if (currentZ < retract) {
-                commands.push(`G53 G0 Z${retract}`);
-            }
-        } else {
-            commands.push('G91');
-            commands.push(`G0Z${retractHeight}`);
-        }
+    if (includesZ) {
+        commands.push('G90 G0 Z0');
     }
 
-    commands.push(`G90 G0 ${axis}0`);
-
-    if (retractHeight !== 0 && axis !== 'Z' && !homingEnabled) {
+    if (retractHeight !== 0 && includesPlanarAxis && !homingEnabled && !includesZ) {
         commands.push(`G91 G0 Z${retractHeight * -1}`);
         commands.push('G90');
     }
 
     controller.command('gcode:safe', commands, 'G21');
+}
+
+export function goXYAxes() {
+    goAxesToZero(['X', 'Y']);
+}
+
+export function goXYZAxes() {
+    goAxesToZero(['X', 'Y', 'Z']);
+}
+
+export function gotoZero(axis: string) {
+    goAxesToZero([axis]);
 }
 
 export function GoTo(pos: DROPosition, isG91: boolean) {

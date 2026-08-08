@@ -4,7 +4,7 @@ __dirname="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 electron_version=$(electron --version)
 
 display_usage() {
-    yarn electron-builder -- --help
+    yarn electron-builder --help
 }
 
 if [ $# -le 1 ]; then
@@ -94,7 +94,7 @@ REBUILD_MARKER="$DIST_DIR/.rebuild-${electron_version}"
 
 if [ ! -f "$REBUILD_MARKER" ]; then
     echo "Rebuilding native modules for electron ${electron_version}"
-    yarn electron-rebuild -- \
+    yarn electron-rebuild \
         --version=${electron_version:1} \
         --module-dir=dist/gsender \
         --which-module=serialport
@@ -113,4 +113,4 @@ if [ -n "$CSC_LINK" ] || [ -n "$CSC_NAME" ]; then
 fi
 cross-env USE_HARD_LINKS=false \
     CSC_IDENTITY_AUTO_DISCOVERY=$CSC_IDENTITY_AUTO_DISCOVERY_VALUE \
-    yarn electron-builder -- "$@"
+    yarn electron-builder "$@"

@@ -5,6 +5,7 @@ import {
     DROPosition,
     zeroAllAxes,
     goXYAxes,
+    goXYZAxes,
     zeroWCS,
     gotoZero,
 } from 'app/features/DRO/utils/DRO';
@@ -517,18 +518,32 @@ function DRO({
                     />
                 )}
 
-                <Button
-                    variant="alt"
-                    onClick={goXYAxes}
-                    disabled={!canClick}
-                    tooltip={{ content: 'Go to XY zero', side: 'bottom' }}
-                    aria-label={`Go to ${isRotaryMode ? 'XA' : 'XY'} zero: Move ${isRotaryMode ? 'X and A' : 'X and Y'} axes to their current work zero position`}
-                    size="responsive"
-                >
-                    <span className="font-mono text-lg">
-                        {isRotaryMode ? 'XA' : 'XY'}
-                    </span>
-                </Button>
+                <div className="flex flex-row items-center gap-1">
+                    {!isRotaryMode && (
+                        <Button
+                            variant="alt"
+                            onClick={goXYZAxes}
+                            disabled={!canClick}
+                            tooltip={{ content: 'Go to XYZ zero', side: 'bottom' }}
+                            aria-label="Go to XYZ zero: Move X, Y, and Z axes to their current work zero positions"
+                            size="responsive"
+                        >
+                            <span className="font-mono text-lg">XYZ</span>
+                        </Button>
+                    )}
+                    <Button
+                        variant="alt"
+                        onClick={goXYAxes}
+                        disabled={!canClick}
+                        tooltip={{ content: 'Go to XY zero', side: 'bottom' }}
+                        aria-label={`Go to ${isRotaryMode ? 'XA' : 'XY'} zero: Move ${isRotaryMode ? 'X and A' : 'X and Y'} axes to their current work zero position`}
+                        size="responsive"
+                    >
+                        <span className="font-mono text-lg">
+                            {isRotaryMode ? 'XA' : 'XY'}
+                        </span>
+                    </Button>
+                </div>
             </div>
         </div>
     );
