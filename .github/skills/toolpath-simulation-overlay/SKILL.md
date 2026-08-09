@@ -10,7 +10,10 @@ Reapply the customer-specific disconnected toolpath simulator without changing
 the CNC job controls. The overlay modifies only the primary Three.js visualizer
 and adds Play, Pause, Replay, and Reset controls in its lower-right corner. It
 also pauses at detected physical tool changes to lift and spin the simulated
-cutter before resuming the toolpath.
+cutter before resuming the toolpath. An optional material-preview switch adds
+a translucent solid stock block and progressive, tool-width grooves during
+playback. It derives both stock bounds and grooves from G1/G2/G3 moves, so
+rapid clearance motion is never presented as removed material.
 
 ## Resources
 
@@ -29,7 +32,9 @@ cutter before resuming the toolpath.
 3. Start hot development mode and load a G-code file while disconnected.
 4. Confirm the lower-right visualizer controls animate the toolpath without
    enabling or sending an actual CNC job. A file with a tool change should
-   briefly lift and spin the cutter at that transition.
+   briefly lift and spin the cutter at that transition. Turn on the stock icon
+   switch to verify that the solid stock excludes rapid-travel height and only
+   cutting passes form grooves as playback advances.
 
 The helper reports success when the patch is already applied, applies it only
 when it matches cleanly, and stops without changing files when upstream changes
@@ -43,6 +48,8 @@ Keep the behavior bounded to `src/app/src/features/Visualizer/Visualizer.jsx`:
 - Keep all simulated state local to the visualizer.
 - Hide the controls while connected or in the secondary visualizer.
 - Do not modify `JobControl`, controller commands, or serial communication.
+- Treat the solid stock and tool-width grooves as a visual approximation, not
+   a CAM or collision simulation.
 
 After merging the integration points and validating HMR, refresh
 `assets/toolpath-simulation.patch` so future updates use the new upstream

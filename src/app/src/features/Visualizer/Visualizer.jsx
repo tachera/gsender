@@ -32,7 +32,7 @@ import colornames from 'colornames';
 import pubsub from 'pubsub-js';
 import PropTypes from 'prop-types';
 import React, { Component } from 'react';
-import { Pause, Play, RotateCcw } from 'lucide-react';
+import { Box, Pause, Play, RotateCcw } from 'lucide-react';
 import * as THREE from 'three';
 import { degToRad } from 'three/src/math/MathUtils';
 import {
@@ -105,6 +105,10 @@ const TOOLPATH_SIMULATION_MAX_DURATION_MS = 60000;
 const TOOLPATH_SIMULATION_MS_PER_FRAME = 8;
 const TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS = 50;
 const TOOLPATH_SIMULATION_TOOL_CHANGE_LIFT = 15;
+const TOOLPATH_SIMULATION_STOCK_PADDING = 4;
+const TOOLPATH_SIMULATION_STOCK_MIN_HEIGHT = 10;
+const TOOLPATH_SIMULATION_MAX_CARVE_SEGMENTS = 4000;
+const TOOLPATH_SIMULATION_MIN_CARVE_SEGMENT_LENGTH = 0.01;
 import { outlineResponse } from '../../workers/Outline.response';
 import { uploadGcodeFileToServer } from 'app/lib/fileupload';
 import { toast } from 'app/lib/toaster';
@@ -112,6 +116,7 @@ import { getZUpTravel } from 'app/lib/SoftLimits.js';
 import { mm2in } from 'app/lib/units';
 import { Confirm } from 'app/components/ConfirmationDialog/ConfirmationDialogLib';
 import { Tooltip } from 'app/components/Tooltip';
+import { Switch } from 'app/components/shadcn/Switch';
 
 class Visualizer extends Component {
     static propTypes = {
@@ -208,6 +213,19 @@ class Visualizer extends Component {
     simulationChangingTool = false;
 
     simulationToolChangeTimeline = null;
+
+    simulationMaterialPreview = this.visualizerConfig.get(
+        'simulationMaterialPreview',
+        false,
+    );
+
+    simulationMaterialGroup = null;
+
+    simulationCarveMesh = null;
+
+    simulationCarveSegments = [];
+
+    simulationToolpathOpacity = null;
 
     setRef = (node) => {
         this.node = node;
@@ -351,8 +369,290 @@ class Visualizer extends Component {
 
         this.setSimulationToolVisibility(true);
         this.simulationFrameIndex = frameIndex;
+        this.updateSimulationMaterialPreview();
         this.updateScene({ forceUpdate: true });
     }
+
+    getSimulationMaterialCutData() {
+        const position = this.visualizer?.geometry?.getAttribute('position');
+        const colors = this.visualizer?.colors;
+        const frames = this.visualizer?.frames;
+
+        if (!position || !colors || !frames?.length) {
+            return null;
+        }
+
+        const bounds = new THREE.Box3();
+        let frameIndex = 0;
+        let cutSegmentCount = 0;
+
+        for (let vertexIndex = 1; vertexIndex < position.count; vertexIndex++) {
+            while (
+                frameIndex + 1 < frames.length &&
+                frames[frameIndex + 1] <= vertexIndex
+            ) {
+                frameIndex++;
+            }
+
+            if (colors[vertexIndex * 4 + 3] < 0.99) {
+                continue;
+            }
+
+            const start = new THREE.Vector3().fromBufferAttribute(
+                position,
+                vertexIndex - 1,
+            );
+            const end = new THREE.Vector3().fromBufferAttribute(
+                position,
+                vertexIndex,
+            );
+
+            if (
+                start.distanceToSquared(end) <
+                TOOLPATH_SIMULATION_MIN_CARVE_SEGMENT_LENGTH ** 2
+            ) {
+                continue;
+            }
+
+            bounds.expandByPoint(start);
+            bounds.expandByPoint(end);
+            cutSegmentCount++;
+        }
+
+        if (bounds.isEmpty()) {
+            return null;
+        }
+
+        const sampleStep = Math.max(
+            1,
+            Math.ceil(
+                cutSegmentCount / TOOLPATH_SIMULATION_MAX_CARVE_SEGMENTS,
+            ),
+        );
+        const segments = [];
+        let sampledCutSegmentCount = 0;
+        frameIndex = 0;
+
+        for (let vertexIndex = 1; vertexIndex < position.count; vertexIndex++) {
+            while (
+                frameIndex + 1 < frames.length &&
+                frames[frameIndex + 1] <= vertexIndex
+            ) {
+                frameIndex++;
+            }
+
+            if (colors[vertexIndex * 4 + 3] < 0.99) {
+                continue;
+            }
+
+            const start = new THREE.Vector3().fromBufferAttribute(
+                position,
+                vertexIndex - 1,
+            );
+            const end = new THREE.Vector3().fromBufferAttribute(
+                position,
+                vertexIndex,
+            );
+
+            if (
+                start.distanceToSquared(end) <
+                TOOLPATH_SIMULATION_MIN_CARVE_SEGMENT_LENGTH ** 2
+            ) {
+                continue;
+            }
+
+            if (sampledCutSegmentCount % sampleStep === 0) {
+                segments.push({ frameIndex, start, end });
+            }
+            sampledCutSegmentCount++;
+        }
+
+        return { bounds, segments };
+    }
+
+    getCompletedSimulationCarveSegmentCount(frameIndex) {
+        let lowerBound = 0;
+        let upperBound = this.simulationCarveSegments.length;
+
+        while (lowerBound < upperBound) {
+            const midpoint = Math.floor((lowerBound + upperBound) / 2);
+            if (this.simulationCarveSegments[midpoint].frameIndex <= frameIndex) {
+                lowerBound = midpoint + 1;
+            } else {
+                upperBound = midpoint;
+            }
+        }
+
+        return lowerBound;
+    }
+
+    createSimulationMaterialPreview() {
+        if (
+            !this.simulationMaterialPreview ||
+            !this.visualizer?.geometry ||
+            this.simulationMaterialGroup
+        ) {
+            return;
+        }
+
+        const materialData = this.getSimulationMaterialCutData();
+        if (!materialData?.segments.length) {
+            return;
+        }
+
+        const { min, max } = materialData.bounds;
+        const width = Math.max(
+            max.x - min.x + TOOLPATH_SIMULATION_STOCK_PADDING * 2,
+            TOOLPATH_SIMULATION_STOCK_PADDING * 2,
+        );
+        const depth = Math.max(
+            max.y - min.y + TOOLPATH_SIMULATION_STOCK_PADDING * 2,
+            TOOLPATH_SIMULATION_STOCK_PADDING * 2,
+        );
+        const stockTop = max.z + TOOLPATH_SIMULATION_STOCK_PADDING / 2;
+        const height = Math.max(
+            stockTop - min.z + TOOLPATH_SIMULATION_STOCK_PADDING,
+            TOOLPATH_SIMULATION_STOCK_MIN_HEIGHT,
+        );
+        const stockBottom = stockTop - height;
+        const toolDiameter = Math.min(
+            6,
+            Math.max(1, Math.min(width, depth) / 80),
+        );
+        const pivotPoint = this.pivotPoint.get();
+        const center = new THREE.Vector3(
+            (min.x + max.x) / 2 - pivotPoint.x,
+            (min.y + max.y) / 2 - pivotPoint.y,
+            (stockTop + stockBottom) / 2 - pivotPoint.z,
+        );
+        const materialGroup = new THREE.Group();
+        const stockGeometry = new THREE.BoxGeometry(width, depth, height);
+        const stockMaterial = new THREE.MeshStandardMaterial({
+            color: '#b87945',
+            metalness: 0,
+            roughness: 0.82,
+            transparent: true,
+            opacity: 0.48,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+        });
+        const stock = new THREE.Mesh(stockGeometry, stockMaterial);
+        const stockEdges = new THREE.LineSegments(
+            new THREE.EdgesGeometry(stockGeometry),
+            new THREE.LineBasicMaterial({
+                color: '#6b3e1f',
+                opacity: 0.85,
+                transparent: true,
+            }),
+        );
+        const carveGeometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+        const carveMaterial = new THREE.MeshStandardMaterial({
+            color: '#2f1608',
+            metalness: 0,
+            roughness: 0.9,
+            transparent: true,
+            opacity: 0.92,
+            depthTest: false,
+        });
+        const carveMesh = new THREE.InstancedMesh(
+            carveGeometry,
+            carveMaterial,
+            materialData.segments.length,
+        );
+        const direction = new THREE.Vector3();
+        const midpoint = new THREE.Vector3();
+        const yAxis = new THREE.Vector3(0, 1, 0);
+        const rotation = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        const matrix = new THREE.Matrix4();
+
+        materialData.segments.forEach(({ start, end }, index) => {
+            direction.subVectors(end, start);
+            const length = direction.length();
+            midpoint.addVectors(start, end).multiplyScalar(0.5);
+            rotation.setFromUnitVectors(yAxis, direction.normalize());
+            scale.set(toolDiameter, length, toolDiameter);
+            matrix.compose(midpoint, rotation, scale);
+            carveMesh.setMatrixAt(index, matrix);
+        });
+
+        stock.position.copy(center);
+        stockEdges.position.copy(center);
+        carveMesh.position.set(-pivotPoint.x, -pivotPoint.y, -pivotPoint.z);
+        carveMesh.count = 0;
+        carveMesh.instanceMatrix.needsUpdate = true;
+        carveMesh.renderOrder = 2;
+        materialGroup.name = 'SimulationMaterialPreview';
+        materialGroup.add(stock, stockEdges, carveMesh);
+        this.group.add(materialGroup);
+
+        const workpiece = this.visualizer.group.children[0];
+        if (workpiece?.material) {
+            this.simulationToolpathOpacity = workpiece.material.opacity;
+            workpiece.material.opacity = 0.18;
+            workpiece.material.needsUpdate = true;
+        }
+
+        this.simulationMaterialGroup = materialGroup;
+    this.simulationCarveMesh = carveMesh;
+    this.simulationCarveSegments = materialData.segments;
+        this.updateSimulationMaterialPreview();
+    }
+
+    clearSimulationMaterialPreview() {
+        if (this.simulationMaterialGroup) {
+            this.group.remove(this.simulationMaterialGroup);
+            this.simulationMaterialGroup.traverse((object) => {
+                object.geometry?.dispose();
+                if (Array.isArray(object.material)) {
+                    object.material.forEach((material) => material.dispose());
+                } else {
+                    object.material?.dispose();
+                }
+            });
+        }
+
+        const workpiece = this.visualizer?.group?.children[0];
+        if (workpiece?.material && this.simulationToolpathOpacity !== null) {
+            workpiece.material.opacity = this.simulationToolpathOpacity;
+            workpiece.material.needsUpdate = true;
+        }
+
+        this.simulationMaterialGroup = null;
+    this.simulationCarveMesh = null;
+    this.simulationCarveSegments = [];
+        this.simulationToolpathOpacity = null;
+    }
+
+    updateSimulationMaterialPreview() {
+        if (!this.simulationMaterialPreview) {
+            return;
+        }
+
+        this.createSimulationMaterialPreview();
+        if (!this.simulationCarveMesh) {
+            return;
+        }
+
+        this.simulationCarveMesh.count =
+            this.getCompletedSimulationCarveSegmentCount(
+                this.simulationFrameIndex,
+            );
+    }
+
+    setSimulationMaterialPreview = (enabled) => {
+        this.simulationMaterialPreview = enabled;
+        this.visualizerConfig.set('simulationMaterialPreview', enabled);
+
+        if (enabled) {
+            this.updateSimulationMaterialPreview();
+        } else {
+            this.clearSimulationMaterialPreview();
+        }
+
+        this.setState({ simulationMaterialPreview: enabled });
+        this.updateScene({ forceUpdate: true });
+    };
 
     setSimulationToolChangeFrames(visualization) {
         const toolChanges = visualization?.info?.toolchanges;
@@ -567,6 +867,7 @@ class Visualizer extends Component {
 
         this.state = {
             simulationStatus: 'idle',
+            simulationMaterialPreview: this.simulationMaterialPreview,
         };
 
         // Three.js
@@ -991,6 +1292,7 @@ class Visualizer extends Component {
         this.unsubscribe();
         this.removeResizeEventListener();
         window.removeEventListener('keydown', this.handleKeyDown);
+        this.clearSimulationMaterialPreview();
         this.clearScene();
 
         // Stop animation loop
@@ -2708,6 +3010,7 @@ class Visualizer extends Component {
 
         // Set the pivot point to the center of the loaded object
         this.pivotPoint.set(center.x, center.y, center.z);
+        this.updateSimulationMaterialPreview();
 
         // Update position
         this.updateCuttingToolPosition(null, { forceUpdateAllAxes: true });
@@ -3005,6 +3308,7 @@ class Visualizer extends Component {
         if (this.simulationActive || this.state.simulationStatus !== 'idle') {
             this.resetToolpathSimulation();
         }
+        this.clearSimulationMaterialPreview();
         this.fileLoaded = false;
         const visualizerObject = this.group.getObjectByName('Visualizer');
         const toolPathObject = this.group.getObjectByName('toolpath');
@@ -3308,6 +3612,7 @@ class Visualizer extends Component {
             !this.props.isConnected &&
             this.fileLoaded &&
             this.visualizer?.frames?.length > 1;
+        const canPreviewMaterial = canSimulate && !this.visualizer?.isLaser;
         const isPlaying = this.state.simulationStatus === 'playing';
         let buttonLabel = 'Play toolpath simulation';
         if (isPlaying) {
@@ -3329,6 +3634,22 @@ class Visualizer extends Component {
             >
                 {canSimulate && (
                     <div className="absolute bottom-3 right-3 z-10 flex gap-2">
+                        {canPreviewMaterial && (
+                            <Tooltip content="Toggle solid material carving preview">
+                                <div className="flex h-9 items-center gap-2 rounded bg-black/70 px-2 text-white">
+                                    <Box size={18} aria-hidden="true" />
+                                    <Switch
+                                        id="simulation-material-preview"
+                                        checked={this.state.simulationMaterialPreview}
+                                        aria-label="Toggle material carving preview"
+                                        className="scale-75"
+                                        onChange={(checked) =>
+                                            this.setSimulationMaterialPreview(checked)
+                                        }
+                                    />
+                                </div>
+                            </Tooltip>
+                        )}
                         <Tooltip content={buttonLabel}>
                             <button
                                 type="button"

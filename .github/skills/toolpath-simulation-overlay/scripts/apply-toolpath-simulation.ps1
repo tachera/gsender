@@ -24,6 +24,8 @@ $installedMarkers = @(
     'startToolpathSimulation',
     'resetToolpathSimulation',
     'animateSimulationToolChange',
+    'setSimulationMaterialPreview',
+    'getSimulationMaterialCutData',
     'absolute bottom-3 right-3 z-10 flex gap-2'
 )
 
