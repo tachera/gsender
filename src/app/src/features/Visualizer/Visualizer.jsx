@@ -104,6 +104,7 @@ const TOOLPATH_SIMULATION_MIN_DURATION_MS = 8000;
 const TOOLPATH_SIMULATION_MAX_DURATION_MS = 60000;
 const TOOLPATH_SIMULATION_MS_PER_FRAME = 8;
 const TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS = 50;
+const TOOLPATH_SIMULATION_TOOL_CHANGE_LIFT = 15;
 import { outlineResponse } from '../../workers/Outline.response';
 import { uploadGcodeFileToServer } from 'app/lib/fileupload';
 import { toast } from 'app/lib/toaster';
@@ -197,6 +198,16 @@ class Visualizer extends Component {
     simulationElapsedMs = 0;
 
     simulationLastUpdateAt = 0;
+
+    simulationFrameIndex = 0;
+
+    simulationToolChangeFrames = [];
+
+    simulationToolChangeFrameIndex = 0;
+
+    simulationChangingTool = false;
+
+    simulationToolChangeTimeline = null;
 
     setRef = (node) => {
         this.node = node;
@@ -339,8 +350,96 @@ class Visualizer extends Component {
         }
 
         this.setSimulationToolVisibility(true);
+        this.simulationFrameIndex = frameIndex;
         this.updateScene({ forceUpdate: true });
     }
+
+    setSimulationToolChangeFrames(visualization) {
+        const toolChanges = visualization?.info?.toolchanges;
+        const frames = visualization?.frames;
+
+        this.simulationToolChangeFrames = Array.isArray(toolChanges)
+            ? [...new Set(
+                toolChanges
+                    .filter((vertexIndex) => vertexIndex > 0)
+                    .map((vertexIndex) =>
+                        frames.findIndex(
+                            (frameVertexIndex) => frameVertexIndex >= vertexIndex,
+                        ),
+                    )
+                    .filter((frameIndex) => frameIndex > 0),
+            )]
+            : [];
+        this.simulationToolChangeFrameIndex = 0;
+    }
+
+    getNextSimulationToolChangeFrame(frameIndex) {
+        const toolChangeFrame = this.simulationToolChangeFrames[
+            this.simulationToolChangeFrameIndex
+        ];
+
+        return toolChangeFrame > this.simulationFrameIndex &&
+            toolChangeFrame <= frameIndex
+            ? toolChangeFrame
+            : null;
+    }
+
+    animateSimulationToolChange = () => {
+        if (this.visualizer?.isLaser) {
+            return false;
+        }
+
+        const tool = this.cuttingTool || this.cuttingPointer;
+        if (!tool) {
+            return false;
+        }
+
+        const toolPosition = tool.position;
+        const toolRotation = tool.rotation.z;
+        this.simulationChangingTool = true;
+        this.simulationToolChangeTimeline = gsap.timeline({
+            onComplete: () => {
+                this.simulationChangingTool = false;
+                this.simulationToolChangeTimeline = null;
+
+                if (!this.simulationActive || !this.simulationPlaying) {
+                    return;
+                }
+
+                this.simulationStartedAt =
+                    performance.now() - this.simulationElapsedMs;
+                this.simulationLastUpdateAt = 0;
+                this.simulationAnimationFrame = requestAnimationFrame(
+                    this.runToolpathSimulation,
+                );
+            },
+        });
+        this.simulationToolChangeTimeline
+            .to(toolPosition, {
+                z: toolPosition.z + TOOLPATH_SIMULATION_TOOL_CHANGE_LIFT,
+                duration: 0.25,
+                ease: 'power1.out',
+                onUpdate: () => this.updateScene({ forceUpdate: true }),
+            })
+            .to(
+                tool.rotation,
+                {
+                    z: toolRotation + Math.PI * 4,
+                    duration: 0.5,
+                    ease: 'none',
+                    onUpdate: () => this.updateScene({ forceUpdate: true }),
+                },
+                '<',
+            )
+            .to(toolPosition, {
+                z: toolPosition.z,
+                duration: 0.25,
+                ease: 'power1.in',
+                onUpdate: () => this.updateScene({ forceUpdate: true }),
+            });
+
+        return true;
+    };
 
     runToolpathSimulation = (timestamp) => {
         if (!this.simulationPlaying || !this.simulationActive) {
@@ -356,7 +455,24 @@ class Visualizer extends Component {
                 TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS
         ) {
             const lastFrameIndex = this.visualizer.frames.length - 1;
-            this.updateSimulationFrame(Math.round(progress * lastFrameIndex));
+            const nextFrameIndex = Math.round(progress * lastFrameIndex);
+            const toolChangeFrame = this.getNextSimulationToolChangeFrame(
+                nextFrameIndex,
+            );
+
+            if (toolChangeFrame !== null) {
+                this.updateSimulationFrame(toolChangeFrame);
+                this.simulationToolChangeFrameIndex++;
+                this.simulationElapsedMs =
+                    (toolChangeFrame / lastFrameIndex) *
+                    this.getSimulationDuration();
+
+                if (this.animateSimulationToolChange()) {
+                    return;
+                }
+            }
+
+            this.updateSimulationFrame(nextFrameIndex);
             this.simulationLastUpdateAt = timestamp;
         }
 
@@ -384,6 +500,11 @@ class Visualizer extends Component {
 
         this.simulationActive = true;
         this.simulationPlaying = true;
+        if (this.simulationChangingTool && this.simulationToolChangeTimeline) {
+            this.simulationToolChangeTimeline.play();
+            this.setState({ simulationStatus: 'playing' });
+            return;
+        }
         this.simulationStartedAt = performance.now() - this.simulationElapsedMs;
         this.simulationLastUpdateAt = 0;
         this.setState({ simulationStatus: 'playing' });
@@ -397,8 +518,12 @@ class Visualizer extends Component {
             return;
         }
 
-        this.simulationElapsedMs = performance.now() - this.simulationStartedAt;
+        if (!this.simulationChangingTool) {
+            this.simulationElapsedMs =
+                performance.now() - this.simulationStartedAt;
+        }
         this.simulationPlaying = false;
+        this.simulationToolChangeTimeline?.pause();
         if (this.simulationAnimationFrame) {
             cancelAnimationFrame(this.simulationAnimationFrame);
             this.simulationAnimationFrame = null;
@@ -407,6 +532,8 @@ class Visualizer extends Component {
     };
 
     resetToolpathSimulation = () => {
+        this.simulationToolChangeTimeline?.kill();
+        this.simulationToolChangeTimeline = null;
         if (this.simulationAnimationFrame) {
             cancelAnimationFrame(this.simulationAnimationFrame);
             this.simulationAnimationFrame = null;
@@ -416,6 +543,9 @@ class Visualizer extends Component {
         this.simulationPlaying = false;
         this.simulationElapsedMs = 0;
         this.simulationLastUpdateAt = 0;
+        this.simulationFrameIndex = 0;
+        this.simulationToolChangeFrameIndex = 0;
+        this.simulationChangingTool = false;
 
         if (this.visualizer?.frames?.length) {
             this.updateSimulationFrame(0);
@@ -869,6 +999,7 @@ class Visualizer extends Component {
         if (this.simulationAnimationFrame) {
             cancelAnimationFrame(this.simulationAnimationFrame);
         }
+        this.simulationToolChangeTimeline?.kill();
 
         // Clean up WebGL context handlers
         if (this.contextLostHandler) {
@@ -2742,6 +2873,7 @@ class Visualizer extends Component {
                 vizualization.framesLen,
             ),
         };
+        this.setSimulationToolChangeFrames(visualization);
 
         const hideProcessedLines = store.get(
             'widgets.visualizer.hideProcessedLines',

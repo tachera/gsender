@@ -18,6 +18,27 @@ if ($gitExitCode -ne 0 -or -not $repositoryRoot) {
     throw 'Run this helper from within a Git checkout of gSender.'
 }
 
+$visualizerPath = Join-Path $repositoryRoot 'src\app\src\features\Visualizer\Visualizer.jsx'
+$installedMarkers = @(
+    'TOOLPATH_SIMULATION_MIN_DURATION_MS',
+    'startToolpathSimulation',
+    'resetToolpathSimulation',
+    'animateSimulationToolChange',
+    'absolute bottom-3 right-3 z-10 flex gap-2'
+)
+
+if (Test-Path $visualizerPath) {
+    $visualizerContent = Get-Content -LiteralPath $visualizerPath -Raw
+    $isInstalled = $installedMarkers | ForEach-Object {
+        $visualizerContent.Contains($_)
+    } | Where-Object { -not $_ }
+
+    if (-not $isInstalled) {
+        Write-Host 'Toolpath simulation overlay is already applied.'
+        return
+    }
+}
+
 # A successful reverse check means the exact overlay is already present.
 & git -C $repositoryRoot apply --reverse --check $patchPath 2>$null
 if ($LASTEXITCODE -eq 0) {

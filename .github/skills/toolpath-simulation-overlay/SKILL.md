@@ -8,7 +8,9 @@ argument-hint: "[apply|refresh]"
 
 Reapply the customer-specific disconnected toolpath simulator without changing
 the CNC job controls. The overlay modifies only the primary Three.js visualizer
-and adds Play, Pause, Replay, and Reset controls in its lower-right corner.
+and adds Play, Pause, Replay, and Reset controls in its lower-right corner. It
+also pauses at detected physical tool changes to lift and spin the simulated
+cutter before resuming the toolpath.
 
 ## Resources
 
@@ -26,7 +28,8 @@ and adds Play, Pause, Replay, and Reset controls in its lower-right corner.
 
 3. Start hot development mode and load a G-code file while disconnected.
 4. Confirm the lower-right visualizer controls animate the toolpath without
-   enabling or sending an actual CNC job.
+   enabling or sending an actual CNC job. A file with a tool change should
+   briefly lift and spin the cutter at that transition.
 
 The helper reports success when the patch is already applied, applies it only
 when it matches cleanly, and stops without changing files when upstream changes

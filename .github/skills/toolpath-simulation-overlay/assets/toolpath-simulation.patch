@@ -1,347 +1,214 @@
 diff --git a/src/app/src/features/Visualizer/Visualizer.jsx b/src/app/src/features/Visualizer/Visualizer.jsx
-index 268c76f80..e62b95a4c 100644
+index e62b95a4c..856d70499 100644
 --- a/src/app/src/features/Visualizer/Visualizer.jsx
 +++ b/src/app/src/features/Visualizer/Visualizer.jsx
-@@ -32,6 +32,7 @@ import colornames from 'colornames';
- import pubsub from 'pubsub-js';
- import PropTypes from 'prop-types';
- import React, { Component } from 'react';
-+import { Pause, Play, RotateCcw } from 'lucide-react';
- import * as THREE from 'three';
- import { degToRad } from 'three/src/math/MathUtils';
- import {
-@@ -99,12 +100,17 @@ const ORTHOGRAPHIC_FAR = 7000;
- const CAMERA_DISTANCE = 1900; // Move the camera out a bit from the origin (0, 0, 0)
- const TRACKBALL_CONTROLS_MIN_DISTANCE = 1;
- const TRACKBALL_CONTROLS_MAX_DISTANCE = 7000;
-+const TOOLPATH_SIMULATION_MIN_DURATION_MS = 8000;
-+const TOOLPATH_SIMULATION_MAX_DURATION_MS = 60000;
-+const TOOLPATH_SIMULATION_MS_PER_FRAME = 8;
-+const TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS = 50;
+@@ -104,6 +104,7 @@ const TOOLPATH_SIMULATION_MIN_DURATION_MS = 8000;
+ const TOOLPATH_SIMULATION_MAX_DURATION_MS = 60000;
+ const TOOLPATH_SIMULATION_MS_PER_FRAME = 8;
+ const TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS = 50;
++const TOOLPATH_SIMULATION_TOOL_CHANGE_LIFT = 15;
  import { outlineResponse } from '../../workers/Outline.response';
  import { uploadGcodeFileToServer } from 'app/lib/fileupload';
  import { toast } from 'app/lib/toaster';
- import { getZUpTravel } from 'app/lib/SoftLimits.js';
- import { mm2in } from 'app/lib/units';
- import { Confirm } from 'app/components/ConfirmationDialog/ConfirmationDialogLib';
-+import { Tooltip } from 'app/components/Tooltip';
+@@ -198,6 +199,16 @@ class Visualizer extends Component {
  
- class Visualizer extends Component {
-     static propTypes = {
-@@ -180,6 +186,18 @@ class Visualizer extends Component {
+     simulationLastUpdateAt = 0;
  
-     waitingForCheck = false;
- 
-+    simulationActive = false;
++    simulationFrameIndex = 0;
 +
-+    simulationPlaying = false;
++    simulationToolChangeFrames = [];
 +
-+    simulationAnimationFrame = null;
++    simulationToolChangeFrameIndex = 0;
 +
-+    simulationStartedAt = 0;
++    simulationChangingTool = false;
 +
-+    simulationElapsedMs = 0;
-+
-+    simulationLastUpdateAt = 0;
++    simulationToolChangeTimeline = null;
 +
      setRef = (node) => {
          this.node = node;
      };
-@@ -264,9 +282,163 @@ class Visualizer extends Component {
+@@ -339,9 +350,97 @@ class Visualizer extends Component {
          }
+ 
+         this.setSimulationToolVisibility(true);
++        this.simulationFrameIndex = frameIndex;
+         this.updateScene({ forceUpdate: true });
+     }
+ 
++    setSimulationToolChangeFrames(visualization) {
++        const toolChanges = visualization?.info?.toolchanges;
++        const frames = visualization?.frames;
++
++        this.simulationToolChangeFrames = Array.isArray(toolChanges)
++            ? [...new Set(
++                toolChanges
++                    .filter((vertexIndex) => vertexIndex > 0)
++                    .map((vertexIndex) =>
++                        frames.findIndex(
++                            (frameVertexIndex) => frameVertexIndex >= vertexIndex,
++                        ),
++                    )
++                    .filter((frameIndex) => frameIndex > 0),
++            )]
++            : [];
++        this.simulationToolChangeFrameIndex = 0;
++    }
++
++    getNextSimulationToolChangeFrame(frameIndex) {
++        const toolChangeFrame = this.simulationToolChangeFrames[
++            this.simulationToolChangeFrameIndex
++        ];
++
++        return toolChangeFrame > this.simulationFrameIndex &&
++            toolChangeFrame <= frameIndex
++            ? toolChangeFrame
++            : null;
++    }
++
++    animateSimulationToolChange = () => {
++        if (this.visualizer?.isLaser) {
++            return false;
++        }
++
++        const tool = this.cuttingTool || this.cuttingPointer;
++        if (!tool) {
++            return false;
++        }
++
++        const toolPosition = tool.position;
++        const toolRotation = tool.rotation.z;
++        this.simulationChangingTool = true;
++        this.simulationToolChangeTimeline = gsap.timeline({
++            onComplete: () => {
++                this.simulationChangingTool = false;
++                this.simulationToolChangeTimeline = null;
++
++                if (!this.simulationActive || !this.simulationPlaying) {
++                    return;
++                }
++
++                this.simulationStartedAt =
++                    performance.now() - this.simulationElapsedMs;
++                this.simulationLastUpdateAt = 0;
++                this.simulationAnimationFrame = requestAnimationFrame(
++                    this.runToolpathSimulation,
++                );
++            },
++        });
++        this.simulationToolChangeTimeline
++            .to(toolPosition, {
++                z: toolPosition.z + TOOLPATH_SIMULATION_TOOL_CHANGE_LIFT,
++                duration: 0.25,
++                ease: 'power1.out',
++                onUpdate: () => this.updateScene({ forceUpdate: true }),
++            })
++            .to(
++                tool.rotation,
++                {
++                    z: toolRotation + Math.PI * 4,
++                    duration: 0.5,
++                    ease: 'none',
++                    onUpdate: () => this.updateScene({ forceUpdate: true }),
++                },
++                '<',
++            )
++            .to(toolPosition, {
++                z: toolPosition.z,
++                duration: 0.25,
++                ease: 'power1.in',
++                onUpdate: () => this.updateScene({ forceUpdate: true }),
++            });
++
++        return true;
++    };
++
+     runToolpathSimulation = (timestamp) => {
+         if (!this.simulationPlaying || !this.simulationActive) {
+             return;
+@@ -356,7 +455,24 @@ class Visualizer extends Component {
+                 TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS
+         ) {
+             const lastFrameIndex = this.visualizer.frames.length - 1;
+-            this.updateSimulationFrame(Math.round(progress * lastFrameIndex));
++            const nextFrameIndex = Math.round(progress * lastFrameIndex);
++            const toolChangeFrame = this.getNextSimulationToolChangeFrame(
++                nextFrameIndex,
++            );
++
++            if (toolChangeFrame !== null) {
++                this.updateSimulationFrame(toolChangeFrame);
++                this.simulationToolChangeFrameIndex++;
++                this.simulationElapsedMs =
++                    (toolChangeFrame / lastFrameIndex) *
++                    this.getSimulationDuration();
++
++                if (this.animateSimulationToolChange()) {
++                    return;
++                }
++            }
++
++            this.updateSimulationFrame(nextFrameIndex);
+             this.simulationLastUpdateAt = timestamp;
+         }
+ 
+@@ -384,6 +500,11 @@ class Visualizer extends Component {
+ 
+         this.simulationActive = true;
+         this.simulationPlaying = true;
++        if (this.simulationChangingTool && this.simulationToolChangeTimeline) {
++            this.simulationToolChangeTimeline.play();
++            this.setState({ simulationStatus: 'playing' });
++            return;
++        }
+         this.simulationStartedAt = performance.now() - this.simulationElapsedMs;
+         this.simulationLastUpdateAt = 0;
+         this.setState({ simulationStatus: 'playing' });
+@@ -397,8 +518,12 @@ class Visualizer extends Component {
+             return;
+         }
+ 
+-        this.simulationElapsedMs = performance.now() - this.simulationStartedAt;
++        if (!this.simulationChangingTool) {
++            this.simulationElapsedMs =
++                performance.now() - this.simulationStartedAt;
++        }
+         this.simulationPlaying = false;
++        this.simulationToolChangeTimeline?.pause();
+         if (this.simulationAnimationFrame) {
+             cancelAnimationFrame(this.simulationAnimationFrame);
+             this.simulationAnimationFrame = null;
+@@ -407,6 +532,8 @@ class Visualizer extends Component {
      };
  
-+    getSimulationDuration() {
-+        const frameCount = this.visualizer?.frames?.length || 0;
-+        return Math.min(
-+            TOOLPATH_SIMULATION_MAX_DURATION_MS,
-+            Math.max(
-+                TOOLPATH_SIMULATION_MIN_DURATION_MS,
-+                frameCount * TOOLPATH_SIMULATION_MS_PER_FRAME,
-+            ),
-+        );
-+    }
-+
-+    setSimulationToolVisibility(visible) {
-+        const isLaser = this.visualizer?.isLaser;
-+        const hasCuttingTool = !!this.cuttingTool;
-+
-+        if (this.cuttingTool) {
-+            this.cuttingTool.visible = visible && !isLaser;
-+        }
-+        if (this.laserPointer) {
-+            this.laserPointer.visible = visible && isLaser;
-+        }
-+        if (this.cuttingPointer) {
-+            this.cuttingPointer.visible = visible && !isLaser && !hasCuttingTool;
-+        }
-+    }
-+
-+    updateSimulationToolPosition(position) {
-+        const pivotPoint = this.pivotPoint.get();
-+        const x = position.x - pivotPoint.x;
-+        const y = position.y - pivotPoint.y;
-+        const z = position.z - pivotPoint.z;
-+        const simulationTool = this.visualizer?.isLaser
-+            ? this.laserPointer
-+            : this.cuttingTool || this.cuttingPointer;
-+
-+        simulationTool?.position.set(x, y, z);
-+        this.workPosition = { ...this.workPosition, ...position };
-+    }
-+
-+    updateSimulationFrame(frameIndex) {
-+        if (!this.visualizer?.frames?.length) {
-+            return;
-+        }
-+
-+        this.visualizer.setFrameIndex(frameIndex);
-+        this.visualizer.greyOutLines(frameIndex);
-+
-+        const position = this.visualizer.getCurrentLocation();
-+        if (
-+            Number.isFinite(position.x) &&
-+            Number.isFinite(position.y) &&
-+            Number.isFinite(position.z)
-+        ) {
-+            this.updateSimulationToolPosition(position);
-+        }
-+
-+        this.setSimulationToolVisibility(true);
-+        this.updateScene({ forceUpdate: true });
-+    }
-+
-+    runToolpathSimulation = (timestamp) => {
-+        if (!this.simulationPlaying || !this.simulationActive) {
-+            return;
-+        }
-+
-+        const elapsedMs = timestamp - this.simulationStartedAt;
-+        const progress = Math.min(elapsedMs / this.getSimulationDuration(), 1);
-+
-+        if (
-+            progress === 1 ||
-+            timestamp - this.simulationLastUpdateAt >=
-+                TOOLPATH_SIMULATION_UPDATE_INTERVAL_MS
-+        ) {
-+            const lastFrameIndex = this.visualizer.frames.length - 1;
-+            this.updateSimulationFrame(Math.round(progress * lastFrameIndex));
-+            this.simulationLastUpdateAt = timestamp;
-+        }
-+
-+        if (progress === 1) {
-+            this.simulationPlaying = false;
-+            this.simulationAnimationFrame = null;
-+            this.setState({ simulationStatus: 'complete' });
-+            return;
-+        }
-+
-+        this.simulationAnimationFrame = requestAnimationFrame(
-+            this.runToolpathSimulation,
-+        );
-+    };
-+
-+    startToolpathSimulation = () => {
-+        if (this.props.isConnected || !this.visualizer?.frames?.length) {
-+            return;
-+        }
-+
-+        if (this.state.simulationStatus === 'complete') {
-+            this.simulationElapsedMs = 0;
-+            this.updateSimulationFrame(0);
-+        }
-+
-+        this.simulationActive = true;
-+        this.simulationPlaying = true;
-+        this.simulationStartedAt = performance.now() - this.simulationElapsedMs;
-+        this.simulationLastUpdateAt = 0;
-+        this.setState({ simulationStatus: 'playing' });
-+        this.simulationAnimationFrame = requestAnimationFrame(
-+            this.runToolpathSimulation,
-+        );
-+    };
-+
-+    pauseToolpathSimulation = () => {
-+        if (!this.simulationPlaying) {
-+            return;
-+        }
-+
-+        this.simulationElapsedMs = performance.now() - this.simulationStartedAt;
-+        this.simulationPlaying = false;
-+        if (this.simulationAnimationFrame) {
-+            cancelAnimationFrame(this.simulationAnimationFrame);
-+            this.simulationAnimationFrame = null;
-+        }
-+        this.setState({ simulationStatus: 'paused' });
-+    };
-+
-+    resetToolpathSimulation = () => {
-+        if (this.simulationAnimationFrame) {
-+            cancelAnimationFrame(this.simulationAnimationFrame);
-+            this.simulationAnimationFrame = null;
-+        }
-+
-+        this.simulationActive = false;
-+        this.simulationPlaying = false;
-+        this.simulationElapsedMs = 0;
-+        this.simulationLastUpdateAt = 0;
-+
-+        if (this.visualizer?.frames?.length) {
-+            this.updateSimulationFrame(0);
-+        }
-+        this.setSimulationToolVisibility(false);
-+        this.setState({ simulationStatus: 'idle' });
-+    };
-+
-+    toggleToolpathSimulation = () => {
-+        if (this.state.simulationStatus === 'playing') {
-+            this.pauseToolpathSimulation();
-+        } else {
-+            this.startToolpathSimulation();
-+        }
-+    };
-+
-     constructor(props) {
-         super(props);
+     resetToolpathSimulation = () => {
++        this.simulationToolChangeTimeline?.kill();
++        this.simulationToolChangeTimeline = null;
+         if (this.simulationAnimationFrame) {
+             cancelAnimationFrame(this.simulationAnimationFrame);
+             this.simulationAnimationFrame = null;
+@@ -416,6 +543,9 @@ class Visualizer extends Component {
+         this.simulationPlaying = false;
+         this.simulationElapsedMs = 0;
+         this.simulationLastUpdateAt = 0;
++        this.simulationFrameIndex = 0;
++        this.simulationToolChangeFrameIndex = 0;
++        this.simulationChangingTool = false;
  
-+        this.state = {
-+            simulationStatus: 'idle',
-+        };
-+
-         // Three.js
-         this.renderer = null;
-         this.scene = null;
-@@ -402,8 +574,12 @@ class Visualizer extends Component {
-             needUpdateScene = true;
+         if (this.visualizer?.frames?.length) {
+             this.updateSimulationFrame(0);
+@@ -869,6 +999,7 @@ class Visualizer extends Component {
+         if (this.simulationAnimationFrame) {
+             cancelAnimationFrame(this.simulationAnimationFrame);
          }
- 
--        // Update visualizer's frame index
--        if (this.visualizer) {
-+        if (this.props.isConnected && this.simulationActive) {
-+            this.resetToolpathSimulation();
-+        }
-+
-+        // Update visualizer's frame index from the connected controller.
-+        if (this.visualizer && !this.simulationActive) {
-             const frameIndex = this.props.receivedLines;
-             this.visualizer.setFrameIndex(frameIndex);
-             // grey lines
-@@ -527,10 +703,7 @@ class Visualizer extends Component {
-                     : !state.objects.cuttingTool.visible;
-                 needUpdateScene = true;
-             } else {
--                // if not, don't show
--                this.cuttingTool.visible = false;
--                this.laserPointer.visible = false;
--                this.cuttingPointer.visible = false;
-+                this.setSimulationToolVisibility(this.simulationActive);
-                 needUpdateScene = true;
-             }
-         }
-@@ -540,7 +713,9 @@ class Visualizer extends Component {
-             const { state } = this.props;
-             const { machinePosition, workPosition } = this.props;
- 
--            let newPos = workPosition;
-+            let newPos = this.simulationActive && !isConnected
-+                ? this.workPosition
-+                : workPosition;
- 
-             if (
-                 isConnected &&
-@@ -691,6 +866,9 @@ class Visualizer extends Component {
-         // Stop animation loop
-         this.animationLoopRunning = false;
-         this.isAgitated = false;
-+        if (this.simulationAnimationFrame) {
-+            cancelAnimationFrame(this.simulationAnimationFrame);
-+        }
++        this.simulationToolChangeTimeline?.kill();
  
          // Clean up WebGL context handlers
          if (this.contextLostHandler) {
-@@ -2511,6 +2689,7 @@ class Visualizer extends Component {
+@@ -2742,6 +2873,7 @@ class Visualizer extends Component {
+                 vizualization.framesLen,
+             ),
+         };
++        this.setSimulationToolChangeFrames(visualization);
  
-     load(name, vizualization, callback) {
-         // Remove previous G-code object
-+        this.resetToolpathSimulation();
-         this.unload();
-         const { currentTheme, disabled, disabledLite, liteMode } =
-             this.props.state;
-@@ -2597,6 +2776,7 @@ class Visualizer extends Component {
-         }
- 
-         this.fileLoaded = true;
-+        this.setState({ simulationStatus: 'idle' });
-     }
- 
-     calculateLimits(data) {
-@@ -2690,6 +2870,9 @@ class Visualizer extends Component {
-     }
- 
-     unload(skipClearingVis = false) {
-+        if (this.simulationActive || this.state.simulationStatus !== 'idle') {
-+            this.resetToolpathSimulation();
-+        }
-         this.fileLoaded = false;
-         const visualizerObject = this.group.getObjectByName('Visualizer');
-         const toolPathObject = this.group.getObjectByName('toolpath');
-@@ -2988,9 +3171,22 @@ class Visualizer extends Component {
-             );
-         }
- 
-+        const canSimulate =
-+            !this.props.isSecondary &&
-+            !this.props.isConnected &&
-+            this.fileLoaded &&
-+            this.visualizer?.frames?.length > 1;
-+        const isPlaying = this.state.simulationStatus === 'playing';
-+        let buttonLabel = 'Play toolpath simulation';
-+        if (isPlaying) {
-+            buttonLabel = 'Pause toolpath simulation';
-+        } else if (this.state.simulationStatus === 'complete') {
-+            buttonLabel = 'Replay toolpath simulation';
-+        }
-+
-         return (
-             <div
--                className="overflow-hidden h-full w-full rounded-lg outline-none"
-+                className="relative overflow-hidden h-full w-full rounded-lg outline-none"
-                 ref={this.setRef}
-                 id="visualizer-wrapper"
-                 onMouseEnter={() => { this.isHovered = true; }}
-@@ -2998,7 +3194,34 @@ class Visualizer extends Component {
-                 tabIndex={0}
-                 role="region"
-                 aria-label="3D Visualizer"
--            />
-+            >
-+                {canSimulate && (
-+                    <div className="absolute bottom-3 right-3 z-10 flex gap-2">
-+                        <Tooltip content={buttonLabel}>
-+                            <button
-+                                type="button"
-+                                className="flex h-9 w-9 items-center justify-center rounded bg-black/70 text-white hover:bg-black focus:outline-none focus:ring-2 focus:ring-white"
-+                                aria-label={buttonLabel}
-+                                onClick={this.toggleToolpathSimulation}
-+                            >
-+                                {isPlaying ? <Pause size={18} /> : <Play size={18} />}
-+                            </button>
-+                        </Tooltip>
-+                        {this.state.simulationStatus !== 'idle' && (
-+                            <Tooltip content="Reset toolpath simulation">
-+                                <button
-+                                    type="button"
-+                                    className="flex h-9 w-9 items-center justify-center rounded bg-black/70 text-white hover:bg-black focus:outline-none focus:ring-2 focus:ring-white"
-+                                    aria-label="Reset toolpath simulation"
-+                                    onClick={this.resetToolpathSimulation}
-+                                >
-+                                    <RotateCcw size={18} />
-+                                </button>
-+                            </Tooltip>
-+                        )}
-+                    </div>
-+                )}
-+            </div>
-         );
-     }
- 
+         const hideProcessedLines = store.get(
+             'widgets.visualizer.hideProcessedLines',
